@@ -69,7 +69,19 @@ for g, a in zip(G[:N_SPIRAL], assign):
 
 COLORS = {(0.6, 0.4, 0.3, 1.0): '#0b0d10', (0.0, 0.1, 0.75, 0.0): '#f8dd75',
           (0.75, 0.679, 0.671, 0.901): '#111', (0.0, 0.0, 0.0, 0.0): '#fff'}
-parts = ['<g class="spiral">']
+# The spiral's outer edge isn't round (it swings ~266–294pt), which reads as a wobble when the
+# record spins. Clip the names to the largest circle the text reaches at every angle.
+env = [0.0] * 360
+for g in G[:N_SPIRAL]:
+    nums = [float(v) for v in re.findall(r'-?\d+(?:\.\d+)?', g['d'])]
+    for x, y in zip(nums[0::2], nums[1::2]):
+        dx, dy = x - CX, y - CY
+        b = int((math.degrees(math.atan2(dy, dx)) + 360) % 360)
+        env[b] = max(env[b], math.hypot(dx, dy))
+CROP_R = round(min(env), 1)
+
+parts = [f'<defs><clipPath id="disc"><circle r="{CROP_R}"/></clipPath></defs>'
+         '<g class="spiral" clip-path="url(#disc)">']
 for k in sorted(inst_paths):
     a, ds = inst_paths[k]
     parts.append(f'<path class="n a{a}" data-i="{k}" d="{"".join(ds)}"/>')
@@ -88,10 +100,11 @@ for g, a in zip(G[:N_SPIRAL], assign):
     if a is None:
         continue
     x, y = g['cx'] - CX, g['cy'] - CY
-    if math.hypot(x, y) < LABEL_R + 2:
+    r = math.hypot(x, y)
+    if r < LABEL_R + 2 or r > CROP_R - 1:      # under the label, or mostly cropped away
         continue
     hits += [round(x, 1), round(y, 1), a[0], a[1]]
-outer = max(math.hypot(g['cx'] - CX, g['cy'] - CY) + max(g['w'], g['h']) / 2 for g in G[:N_SPIRAL])
+outer = CROP_R
 
 # --- songs ---------------------------------------------------------------------------
 url = 'https://itunes.apple.com/lookup?country=US&id=' + ','.join(map(str, TRACKS))

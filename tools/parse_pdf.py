@@ -12,8 +12,11 @@ def bez(p0,p1,p2,p3,n=6):
 for t in toks:
     try: nums.append(float(t)); continue
     except: pass
-    if t=='k': color=tuple(nums[-4:])
+    if t=='k':
+        color=tuple(nums[-4:])
+        if cur is not None: cur['color']=color
     elif t=='cm': cur={'tx':nums[-2],'ty':nums[-1],'cmds':[],'subs':[],'color':color}
+    elif t=='Q': cur={'tx':0.0,'ty':0.0,'cmds':[],'subs':[],'color':color}   # back to page space
     elif cur is not None and t=='m':
         cur['cmds'].append(('M',nums[-2:])); cur['subs'].append([tuple(nums[-2:])])
     elif cur is not None and t=='l':
