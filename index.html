@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>B.E.N. Record Player</title>
+<meta name="description" content="Drop the needle on an artist's name to play their song.">
+<style>
+  :root {
+    --teal: #419591;
+    --ink: #0b0d10;
+    --label: #f8dd75;
+    --ink-soft: rgba(11, 13, 16, .62);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  /* three rows: equal space above and below keeps the deck itself centred in the viewport,
+     the caption hangs in the bottom row */
+  body {
+    --info: 128px;
+    background: var(--teal);
+    color: var(--ink);
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    display: grid; justify-items: center;
+    grid-template-rows: minmax(var(--info), 1fr) auto minmax(var(--info), 1fr);
+    min-height: 100vh; min-height: 100dvh; padding: 0 16px; overflow-x: hidden;
+    -webkit-user-select: none; user-select: none;
+  }
+  #info { grid-row: 3; align-self: start; width: 100%; display: flex; flex-direction: column; align-items: center; }
+  #wrap {
+    grid-row: 2;
+    position: relative; overflow: hidden;
+    width: min(100%, 1180px, calc((100vh - 2 * var(--info)) * 1110 / 872));
+    min-width: min(100%, 320px);
+    aspect-ratio: 1110 / 872;
+  }
+  #stage {
+    position: absolute; left: 0; top: 0; width: 1110px; height: 872px;
+    transform-origin: 0 0; touch-action: none;
+  }
+  #stage img { position: absolute; pointer-events: none; -webkit-user-drag: none; }
+  #deck { left: 0; top: 0; width: 1110px; height: 872px; }
+  #record {
+    position: absolute; will-change: transform; border-radius: 50%;
+  }
+  #record svg { display: block; width: 100%; height: 100%; overflow: visible; }
+  #record .n, #record .sep { fill: var(--ink); transition: fill .35s ease; }
+  #arm {
+    left: 789px; top: 51px; width: 206px; height: 766px;
+    transform-origin: 149.5px 163.1px; will-change: transform;
+    filter: drop-shadow(3px 5px 3px rgba(0,0,0,.28));
+    transition: filter .18s ease;
+  }
+  #arm.lifted { filter: drop-shadow(16px 22px 9px rgba(0,0,0,.2)); }
+  #stage.grab { cursor: grab; }
+  #stage.grabbing { cursor: grabbing; }
+  #stage.press { cursor: pointer; }
+  #led {
+    position: absolute; left: 30px; top: 733px; width: 9px; height: 9px; border-radius: 50%;
+    background: #c9d3d2; box-shadow: inset 0 0 0 1px rgba(0,0,0,.25); transition: background .2s;
+  }
+  #led.on { background: #ff5a3c; box-shadow: 0 0 6px 1px rgba(255,90,60,.7); }
+  #armfocus {
+    position: absolute; left: 905px; top: 180px; width: 70px; height: 70px; border-radius: 50%;
+    border: 0; background: transparent; padding: 0; cursor: grab;
+  }
+  #armfocus:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+
+  #now {
+    margin-top: 18px; width: 100%; max-width: 640px; min-height: 58px;
+    display: flex; align-items: center; gap: 14px; justify-content: center; text-align: left;
+  }
+  #cover {
+    width: 52px; height: 52px; flex: none; border-radius: 3px; background: rgba(0,0,0,.12);
+    background-size: cover; background-position: center; opacity: 0; transition: opacity .3s;
+  }
+  #cover.show { opacity: 1; }
+  #meta { min-width: 0; }
+  #kicker {
+    font-size: 11px; font-weight: 800; letter-spacing: .32em; text-transform: uppercase; color: var(--ink-soft);
+  }
+  #title { font-size: 19px; font-weight: 700; line-height: 1.2; margin-top: 3px; overflow-wrap: anywhere; }
+  #title .track { font-weight: 400; }
+  #link { font-size: 12px; color: var(--ink); margin-top: 4px; display: inline-block; text-underline-offset: 2px; }
+  #link[hidden] { display: none; }
+  footer { margin-top: 14px; font-size: 11px; color: var(--ink-soft); letter-spacing: .04em; text-align: center; }
+  footer a { color: inherit; }
+</style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="stage" aria-label="Turntable. Drag the tonearm onto a name to play that artist.">
+      <img id="deck" src="assets/deck.png" alt="">
+      <div id="record" aria-hidden="true"></div>
+      <img id="arm" src="assets/arm.png" alt="">
+      <div id="led"></div>
+      <button id="armfocus" aria-label="Tonearm: arrow keys move it, Enter lowers or lifts the needle"></button>
+    </div>
+  </div>
+
+  <div id="info">
+  <div id="now" aria-live="polite">
+    <div id="cover"></div>
+    <div id="meta">
+      <div id="kicker">33⅓ RPM</div>
+      <div id="title">Drag the tonearm onto a name</div>
+      <a id="link" hidden target="_blank" rel="noopener">Listen on Apple Music ↗</a>
+    </div>
+  </div>
+  <footer>Grab the record to scratch · Start • Stop switches the motor · 30-second previews courtesy of Apple Music</footer>
+  </div>
+
+<script src="assets/data.js"></script>
+<script>
+(() => {
+  const D = window.RECORD_DATA;
+
+  // ---- geometry (stage pixels; stage = deck.png at 1:1) -----------------------------
+  const STAGE_W = 1110;
+  const PLAT = { x: 443.8, y: 436.5 };          // platter / spindle centre
+  const PIVOT = { x: 938.5, y: 214.1 };         // tonearm axis (teal dot on the arm)
+  const TIP0 = { x: -102.5, y: 559.9 };         // stylus relative to the pivot at rest
+  const VIEW = 296;                             // SVG viewBox half-size in PDF points
+  const S = 348 / D.outerR;                     // px per point: names end just inside the mat
+  const LABEL_PX = D.labelR * S;
+  const OUTER_PX = D.outerR * S;
+  const STARTSTOP = { x0: 38, y0: 761, x1: 134, y1: 836 };
+  const RPM_DEG = 360 * (100 / 3) / 60;         // 33⅓ rpm in degrees per second
+
+  // ---- DOM ------------------------------------------------------------------------
+  const $ = id => document.getElementById(id);
+  const wrap = $('wrap'), stage = $('stage'), rec = $('record'), arm = $('arm'), led = $('led');
+  const cover = $('cover'), kicker = $('kicker'), title = $('title'), link = $('link');
+
+  const size = 2 * VIEW * S;
+  Object.assign(rec.style, { width: size + 'px', height: size + 'px',
+    left: (PLAT.x - size / 2) + 'px', top: (PLAT.y - size / 2) + 'px' });
+  rec.innerHTML = `<svg viewBox="${-VIEW} ${-VIEW} ${2 * VIEW} ${2 * VIEW}">${D.svg}</svg>`;
+  const svg = rec.firstChild;
+  const css = D.artists.map((_, i) => `#record svg[data-on="${i}"] .a${i}{fill:var(--label)}`).join('');
+  document.head.appendChild(Object.assign(document.createElement('style'), { textContent: css }));
+
+  // the wrapper is sized in CSS (fits width and height); the stage is scaled to match it
+  let k = 1;
+  function fit() {
+    k = wrap.clientWidth / STAGE_W || 1;
+    stage.style.transform = `scale(${k})`;
+  }
+  new ResizeObserver(fit).observe(wrap); fit();
+
+  // ---- state -------------------------------------------------------------------------
+  const deg = Math.PI / 180;
+  let phi = 0;                // record rotation (deg, clockwise, unwrapped)
+  let speed = 0;              // current record speed (deg/s); negative = backwards
+  let motorOn = false;        // the record rests on load, then the motor starts (see below)
+  let theta = 0;              // arm rotation (deg, clockwise), 0 = rest
+  let armState = 'rest';      // rest | drag | down | up (lifted, parked over the deck)
+  let grabOffset = 0;
+  let hand = null;            // { lastAngle } while the record is held (scratching)
+  let playing = null;         // { artist }
+  led.classList.toggle('on', motorOn);
+
+  function tipAt(t) {
+    const c = Math.cos(t * deg), s = Math.sin(t * deg);
+    return { x: PIVOT.x + TIP0.x * c - TIP0.y * s, y: PIVOT.y + TIP0.x * s + TIP0.y * c };
+  }
+  // arm limits: a touch past rest, and in until the headshell reaches the edge of the label
+  // (the headshell's front corner leads the stylus by ~31px at that angle)
+  const HEADSHELL_LEAD = 33;
+  const MIN_T = -3;
+  let MAX_T = 0;
+  for (let t = 0; t < 80; t += 0.05) {
+    const p = tipAt(t);
+    if (Math.hypot(p.x - PLAT.x, p.y - PLAT.y) < LABEL_PX + HEADSHELL_LEAD) break;
+    MAX_T = t;
+  }
+  const clampT = t => Math.max(MIN_T, Math.min(MAX_T, t));
+
+  // ---- what is under the needle ---------------------------------------------------
+  const H = D.hits, NH = H.length / 4;
+  function hitAt(p) {
+    const dx = p.x - PLAT.x, dy = p.y - PLAT.y, r = Math.hypot(dx, dy);
+    if (r > OUTER_PX + 8) return { zone: 'off' };
+    if (r < LABEL_PX) return { zone: 'label' };
+    const c = Math.cos(phi * deg), s = Math.sin(phi * deg);
+    const lx = (dx * c + dy * s) / S, ly = (-dx * s + dy * c) / S;
+    let best = 1e9, bi = 0;
+    for (let i = 0; i < NH; i++) {
+      const ex = H[4 * i] - lx, ey = H[4 * i + 1] - ly, d2 = ex * ex + ey * ey;
+      if (d2 < best) { best = d2; bi = i; }
+    }
+    return { zone: 'groove', artist: H[4 * bi + 2] };
+  }
+
+  // ---- sound -------------------------------------------------------------------------
+  // Each preview is decoded into memory and played by a tiny "turntable" processor whose
+  // playhead speed follows the record — so slowing, stopping and scratching (even
+  // backwards) are heard. If a preview can't be decoded we fall back to an <audio> element.
+  let actx = null, crackleGain = null, deckNode = null;
+  const deck = { buf: null, pos: 0, rate: 0, target: 0, ended: false };
+  const buffers = new Map();
+
+  function initAudio() {
+    if (actx) { if (actx.state === 'suspended') actx.resume(); return; }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    actx = new AC();
+
+    deckNode = actx.createScriptProcessor(1024, 0, 2);
+    const smooth = 1 - Math.exp(-1 / (0.012 * actx.sampleRate));   // ~12 ms rate inertia
+    deckNode.onaudioprocess = e => {
+      const L = e.outputBuffer.getChannelData(0), R = e.outputBuffer.getChannelData(1);
+      const b = deck.buf;
+      if (!b) { L.fill(0); R.fill(0); deck.rate = 0; return; }
+      const l = b.l, r = b.r, n = l.length - 1, step = b.ratio;
+      let pos = deck.pos, rate = deck.rate;
+      const target = deck.target;
+      for (let i = 0; i < L.length; i++) {
+        rate += (target - rate) * smooth;
+        pos += rate * step;
+        if (pos < 0) pos = 0;
+        if (pos >= n) { pos = n; deck.ended = true; }
+        const i0 = pos | 0, f = pos - i0, i1 = Math.min(n, i0 + 1);
+        L[i] = l[i0] + (l[i1] - l[i0]) * f;
+        R[i] = r[i0] + (r[i1] - r[i0]) * f;
+      }
+      deck.pos = pos; deck.rate = rate;
+    };
+    const out = actx.createGain(); out.gain.value = 0.9;
+    deckNode.connect(out).connect(actx.destination);
+
+    // looping crackle bed: sparse clicks over faint hiss
+    const len = actx.sampleRate * 3, buf = actx.createBuffer(1, len, actx.sampleRate), ch = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) {
+      ch[i] = (Math.random() * 2 - 1) * 0.012;
+      if (Math.random() < 0.00035) {
+        const amp = 0.25 + Math.random() * 0.6, m = 20 + (Math.random() * 60 | 0);
+        for (let j = 0; j < m && i + j < len; j++) ch[i + j] += amp * (Math.random() * 2 - 1) * Math.exp(-j / 8);
+      }
+    }
+    const src = actx.createBufferSource(); src.buffer = buf; src.loop = true;
+    const hp = actx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 900;
+    crackleGain = actx.createGain(); crackleGain.gain.value = 0;
+    src.connect(hp).connect(crackleGain).connect(actx.destination); src.start();
+  }
+
+  function loadBuffer(artist) {
+    if (!actx) return Promise.reject();
+    if (!buffers.has(artist)) {
+      const song = D.songs[artist];
+      const p = fetch(song.preview, { mode: 'cors' })
+        .then(r => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
+        .catch(() => refreshPreview(song).then(() => fetch(song.preview, { mode: 'cors' })).then(r => r.arrayBuffer()))
+        .then(ab => new Promise((res, rej) => actx.decodeAudioData(ab, res, rej)))
+        .then(ab => ({ l: ab.getChannelData(0), r: ab.getChannelData(ab.numberOfChannels > 1 ? 1 : 0),
+                       ratio: ab.sampleRate / actx.sampleRate }));
+      p.catch(() => buffers.delete(artist));
+      buffers.set(artist, p);
+    }
+    return buffers.get(artist);
+  }
+
+  function needleDropSound() {
+    if (!actx) return;
+    const sr = actx.sampleRate, len = sr * 0.35, buf = actx.createBuffer(1, len, sr), ch = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) {
+      const e = Math.exp(-i / (sr * 0.03));
+      ch[i] = (Math.random() * 2 - 1) * e * 0.5 + Math.sin(i / sr * 2 * Math.PI * 55) * e * 0.9;
+    }
+    const src = actx.createBufferSource(); src.buffer = buf;
+    const lp = actx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2400;
+    const g = actx.createGain(); g.gain.value = 0.5;
+    src.connect(lp).connect(g).connect(actx.destination); src.start();
+  }
+
+  // fallback player (no scratch audio) for previews that can't be decoded
+  const audio = new Audio();
+  audio.preload = 'auto';
+  audio.preservesPitch = false; audio.mozPreservesPitch = false; audio.webkitPreservesPitch = false;
+  let useElement = false;
+  audio.addEventListener('ended', () => { if (useElement) songEnded(); });
+  audio.addEventListener('error', () => { if (useElement && playing) setCaption('Preview unavailable', D.songs[playing.artist].artist, ''); });
+
+  // refresh an expired preview URL via the iTunes Lookup API (JSONP)
+  function refreshPreview(song) {
+    return new Promise((resolve, reject) => {
+      const cb = '__itunes' + Date.now() + (Math.random() * 1e6 | 0);
+      const s = document.createElement('script');
+      window[cb] = res => {
+        delete window[cb]; s.remove();
+        const r = res && res.results && res.results[0];
+        if (r && r.previewUrl && r.previewUrl !== song.preview) { song.preview = r.previewUrl; resolve(); } else reject();
+      };
+      s.onerror = () => { delete window[cb]; s.remove(); reject(); };
+      s.src = `https://itunes.apple.com/lookup?id=${song.id}&country=US&callback=${cb}`;
+      document.head.appendChild(s);
+    });
+  }
+
+  let loadToken = 0;
+  function startSong(artist) {
+    const song = D.songs[artist];
+    const token = ++loadToken;
+    playing = { artist };
+    svg.dataset.on = artist;
+    deck.buf = null; deck.ended = false;
+    useElement = false; audio.pause();
+    setCaption('Loading', song.artist, song.track);
+    cover.style.backgroundImage = `url("${song.art}")`;
+    cover.classList.add('show');
+    link.href = song.link; link.hidden = false;
+    loadBuffer(artist).then(b => {
+      if (token !== loadToken) return;
+      deck.pos = 0; deck.rate = 0; deck.ended = false; deck.buf = b;
+      showSong(artist);
+    }).catch(() => {
+      if (token !== loadToken) return;
+      useElement = true;
+      audio.src = song.preview; audio.currentTime = 0;
+      audio.play().then(() => showSong(artist)).catch(() => {});
+    });
+  }
+  function stopSong() {
+    loadToken++;
+    playing = null;
+    deck.buf = null;
+    useElement = false; audio.pause();
+    delete svg.dataset.on;
+    cover.classList.remove('show');
+    link.hidden = true;
+  }
+  function songEnded() {
+    if (armState !== 'down') return;
+    // keep going like a groove: play whoever is under the needle now
+    const h = hitAt(tipAt(theta));
+    let next = h.zone === 'groove' ? h.artist : null;
+    if (next === null || (playing && next === playing.artist)) next = ((playing ? playing.artist : 0) + 1) % D.songs.length;
+    startSong(next);
+  }
+
+  function showSong(artist) {
+    const s = D.songs[artist];
+    setCaption(motorOn || hand ? 'Now playing' : 'Paused', s.artist, s.track);
+  }
+  function setCaption(kick, artist, track) {
+    kicker.textContent = kick;
+    title.textContent = artist;
+    if (track) {
+      const t = document.createElement('span'); t.className = 'track'; t.textContent = ' — ' + track;
+      title.append(t);
+    }
+  }
+  function idleCaption() {
+    kicker.textContent = '33⅓ RPM';
+    title.textContent = 'Drag the tonearm onto a name';
+  }
+
+  // ---- interaction ---------------------------------------------------------------------
+  function toStage(e) {
+    const r = stage.getBoundingClientRect();
+    return { x: (e.clientX - r.left) / k, y: (e.clientY - r.top) / k };
+  }
+  function nearArm(p) {
+    const a = PIVOT, b = tipAt(theta);
+    const vx = b.x - a.x, vy = b.y - a.y;
+    const t = Math.max(0, Math.min(1, ((p.x - a.x) * vx + (p.y - a.y) * vy) / (vx * vx + vy * vy)));
+    const d = Math.hypot(p.x - (a.x + t * vx), p.y - (a.y + t * vy));
+    return d < 26 || Math.hypot(p.x - b.x, p.y - b.y) < 42 || Math.hypot(p.x - a.x, p.y - a.y) < 60;
+  }
+  const onRecord = p => Math.hypot(p.x - PLAT.x, p.y - PLAT.y) < OUTER_PX + 10;
+  const inStartStop = p => p.x > STARTSTOP.x0 && p.x < STARTSTOP.x1 && p.y > STARTSTOP.y0 && p.y < STARTSTOP.y1;
+  const pivotAngle = p => Math.atan2(p.y - PIVOT.y, p.x - PIVOT.x) / deg;
+  const platAngle = p => Math.atan2(p.y - PLAT.y, p.x - PLAT.x) / deg;
+  const wrapDeg = a => ((a + 540) % 360) - 180;
+
+  function lift() {
+    if (armState === 'down') stopSong();
+    arm.classList.add('lifted');
+  }
+  function lower() {
+    arm.classList.remove('lifted');
+    const h = hitAt(tipAt(theta));
+    if (h.zone === 'groove') {
+      armState = 'down';
+      needleDropSound();
+      startSong(h.artist);
+    } else {
+      armState = theta < 1.5 ? 'rest' : 'up';
+      if (theta < 1.5) theta = 0;
+      idleCaption();
+    }
+  }
+
+  stage.addEventListener('pointerdown', e => {
+    const p = toStage(e);
+    initAudio();
+    if (nearArm(p)) {
+      e.preventDefault();
+      stage.setPointerCapture(e.pointerId);
+      lift();
+      armState = 'drag';
+      grabOffset = theta - pivotAngle(p);
+      stage.className = 'grabbing';
+    } else if (onRecord(p)) {
+      // hold the record: it now moves only with the hand (scratch)
+      e.preventDefault();
+      stage.setPointerCapture(e.pointerId);
+      hand = { lastAngle: platAngle(p) };
+      stage.className = 'grabbing';
+    } else if (inStartStop(p)) {
+      toggleMotor();
+    }
+  });
+  stage.addEventListener('pointermove', e => {
+    const p = toStage(e);
+    if (armState === 'drag') {
+      let a = pivotAngle(p) + grabOffset;
+      a = theta + wrapDeg(a - theta);
+      theta = clampT(a);
+      const h = hitAt(tipAt(theta));
+      if (h.zone === 'groove') {
+        kicker.textContent = 'Drop on'; title.textContent = D.artists[h.artist];
+        loadBuffer(h.artist).catch(() => {});            // warm up the preview
+      } else idleCaption();
+    } else if (hand) {
+      const a = platAngle(p);
+      phi += wrapDeg(a - hand.lastAngle);
+      hand.lastAngle = a;
+    } else {
+      stage.className = nearArm(p) || onRecord(p) ? 'grab' : inStartStop(p) ? 'press' : '';
+    }
+  });
+  const endPointer = () => {
+    if (armState === 'drag') { stage.className = ''; lower(); }
+    if (hand) { hand = null; stage.className = ''; }      // let go: the record keeps its momentum
+  };
+  stage.addEventListener('pointerup', endPointer);
+  stage.addEventListener('pointercancel', endPointer);
+
+  // keyboard: arrows move the (lifted) arm, Enter/Space lowers or lifts it, S toggles the motor
+  $('armfocus').addEventListener('keydown', e => {
+    initAudio();
+    if (e.key.startsWith('Arrow')) {
+      e.preventDefault();
+      if (armState === 'down') { lift(); armState = 'up'; }
+      else arm.classList.add('lifted');
+      const step = e.shiftKey ? 4 : 1;
+      theta = clampT(theta + ((e.key === 'ArrowLeft' || e.key === 'ArrowDown') ? step : -step));
+      if (armState === 'rest') armState = 'up';
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      if (armState === 'down') { lift(); armState = 'up'; } else lower();
+    } else if (e.key.toLowerCase() === 's') toggleMotor();
+  });
+
+  // start the motor 2.5 s after load, unless the visitor already pressed Start • Stop
+  let motorTouched = false;
+  setTimeout(() => { if (!motorTouched && !motorOn) toggleMotor(true); }, 2500);
+
+  function toggleMotor(auto) {
+    if (auto !== true) motorTouched = true;
+    motorOn = !motorOn;
+    led.classList.toggle('on', motorOn);
+    if (playing) showSong(playing.artist);
+  }
+
+  // ---- animation loop ----------------------------------------------------------------
+  let last = performance.now(), prevPhi = phi;
+  function frame(now) {
+    const dt = Math.min(0.05, Math.max(0.001, (now - last) / 1000)); last = now;
+    if (hand) {
+      // record follows the hand; speed = how fast the hand moves it
+      const v = (phi - prevPhi) / dt;
+      speed += (v - speed) * (1 - Math.exp(-dt / 0.03));
+    } else {
+      const target = motorOn ? RPM_DEG : 0;
+      const tau = motorOn ? 0.35 : 0.9;                   // spin-up quick, spin-down slow
+      speed += (target - speed) * (1 - Math.exp(-dt / tau));
+      if (!motorOn && Math.abs(speed) < 0.5) speed = 0;
+      phi += speed * dt;
+    }
+    prevPhi = phi;
+    rec.style.transform = `rotate(${phi % 360}deg)`;
+
+    const rate = armState === 'down' ? speed / RPM_DEG : 0;    // 1 = normal, <0 = backwards
+    deck.target = Math.max(-6, Math.min(6, rate));
+    if (deck.ended && deck.buf) { deck.ended = false; if (rate > 0) songEnded(); }
+    if (useElement && playing) {
+      if (rate < 0.12) { if (!audio.paused) audio.pause(); }
+      else {
+        audio.playbackRate = Math.min(4, rate);
+        if (audio.paused && audio.readyState >= 2) audio.play().catch(() => {});
+      }
+    }
+    if (crackleGain) crackleGain.gain.setTargetAtTime(armState === 'down' ? 0.16 * Math.min(1, Math.abs(rate)) : 0, actx.currentTime, 0.05);
+    if (armState === 'down' && rate > 0) theta = clampT(theta + 0.012 * dt * rate);   // needle tracks inward
+    arm.style.transform = `rotate(${theta}deg)`;
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
