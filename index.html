@@ -65,6 +65,21 @@
     border: 0; background: transparent; padding: 0; cursor: grab;
   }
   #armfocus:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+  #stage.slide { cursor: ns-resize; }
+  /* pitch fader: a patch hides the knob drawn into deck.png and redraws the slot behind the live knob */
+  #pitchpatch { position: absolute; left: 1011px; top: 584px; width: 42px; height: 53px; background: var(--teal); }
+  #pitchpatch::before, #pitchpatch::after { content: ""; position: absolute; top: 0; bottom: 0; background: #000; }
+  #pitchpatch::before { left: 17px; width: 2px; }
+  #pitchpatch::after { left: 22px; width: 3px; }
+  #pitchknob {
+    position: absolute; left: 1008px; top: 585.5px; width: 47px; height: 49px;
+    background: var(--teal); border: 2px solid #000; border-left-width: 4px; border-right-width: 4px;
+    cursor: ns-resize; touch-action: none;
+  }
+  #pitchknob::after { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 2px; margin-top: -1px; background: #000; }
+  /* tick marks left of the fader: +8% (top), 0, −8% — aligned with the knob's centre line */
+  .tick { position: absolute; left: 992px; width: 11px; height: 2px; background: #000; }
+  #pitchknob:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
 
   #now {
     margin-top: 18px; width: 100%; max-width: 640px; min-height: 58px;
@@ -94,6 +109,11 @@
       <div id="record" aria-hidden="true"></div>
       <img id="arm" src="assets/arm.png" alt="">
       <div id="led"></div>
+      <div class="tick" style="top: 504px"></div>
+      <div class="tick" style="top: 609px"></div>
+      <div class="tick" style="top: 714px"></div>
+      <div id="pitchpatch"></div>
+      <div id="pitchknob" role="slider" tabindex="0" aria-label="Pitch" aria-valuemin="-8" aria-valuemax="8" aria-valuenow="0" aria-valuetext="±0.0%"></div>
       <button id="armfocus" aria-label="Tonearm: arrow keys move it, Enter lowers or lifts the needle"></button>
     </div>
   </div>
@@ -107,7 +127,7 @@
       <a id="link" hidden target="_blank" rel="noopener">Listen on Apple Music ↗</a>
     </div>
   </div>
-  <footer>Grab the record to scratch · Start • Stop switches the motor · 30-second previews courtesy of Apple Music</footer>
+  <footer>Grab the record to scratch · Slide the pitch fader to change speed · Start • Stop switches the motor · 30-second previews courtesy of Apple Music</footer>
   </div>
 
 <script src="assets/data.js"></script>
@@ -126,6 +146,9 @@
   const OUTER_PX = D.outerR * S;
   const STARTSTOP = { x0: 38, y0: 761, x1: 134, y1: 836 };
   const RPM_DEG = 360 * (100 / 3) / 60;         // 33⅓ rpm in degrees per second
+  const LINE_PX = 13.8 * S;                     // spacing between turns of the name spiral
+  const DRIFT_PX_PER_S = LINE_PX / 30;          // needle creeps in about one line per preview
+  const SWAY_DEG = 0.3;                         // once-per-turn sway of an off-centre record
 
   // ---- DOM ------------------------------------------------------------------------
   const $ = id => document.getElementById(id);
@@ -156,6 +179,7 @@
   let theta = 0;              // arm rotation (deg, clockwise), 0 = rest
   let armState = 'rest';      // rest | drag | down | up (lifted, parked over the deck)
   let grabOffset = 0;
+  let swayAmp = 0;            // current sway amplitude (deg)
   let hand = null;            // { lastAngle } while the record is held (scratching)
   let playing = null;         // { artist }
   led.classList.toggle('on', motorOn);
@@ -340,7 +364,13 @@
 
   function showSong(artist) {
     const s = D.songs[artist];
-    setCaption(motorOn || hand ? 'Now playing' : 'Paused', s.artist, s.track);
+    setCaption((motorOn || hand ? 'Now playing' : 'Paused') + pitchTag(), s.artist, s.track);
+  }
+  const pitchTag = () => pitch ? ' · ' + fmtPitch() : '';
+  const fmtPitch = () => (pitch > 0 ? '+' : pitch < 0 ? '−' : '±') + Math.abs(pitch).toFixed(1) + '%';
+  function restoreCaption() {
+    if (armState === 'drag') return;
+    if (playing) showSong(playing.artist); else idleCaption();
   }
   function setCaption(kick, artist, track) {
     kicker.textContent = kick;
@@ -351,9 +381,37 @@
     }
   }
   function idleCaption() {
-    kicker.textContent = '33⅓ RPM';
+    kicker.textContent = '33⅓ RPM' + pitchTag();
     title.textContent = 'Drag the tonearm onto a name';
   }
+
+  // ---- pitch fader: ±8%, up = faster, clicks into place at 0 ---------------------------
+  const FADER = { x0: 1004, x1: 1058, y0: 461, y1: 758, mid: 610, travel: 105, range: 8 };
+  const knob = $('pitchknob');
+  let pitch = 0, pitchDrag = null, pitchTimer = 0;
+  const knobY = () => FADER.mid - pitch / FADER.range * FADER.travel;
+  const yToPitch = y => (FADER.mid - y) / FADER.travel * FADER.range;
+  const inFader = p => p.x > FADER.x0 && p.x < FADER.x1 && p.y > FADER.y0 && p.y < FADER.y1;
+  function setPitch(v, announce) {
+    v = Math.max(-FADER.range, Math.min(FADER.range, v));
+    if (Math.abs(v) < 0.4) v = 0;                            // centre click
+    pitch = Math.round(v * 10) / 10;
+    knob.style.top = (knobY() - 24.5) + 'px';
+    knob.setAttribute('aria-valuenow', pitch);
+    knob.setAttribute('aria-valuetext', fmtPitch());
+    if (announce) {
+      kicker.textContent = 'Pitch'; title.textContent = fmtPitch();
+      clearTimeout(pitchTimer); pitchTimer = setTimeout(restoreCaption, 1400);
+    }
+  }
+  knob.addEventListener('keydown', e => {
+    const step = e.shiftKey ? 1 : 0.1;
+    if (e.key === 'ArrowUp' || e.key === 'ArrowRight') setPitch(pitch + step, true);
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') setPitch(pitch - step, true);
+    else if (e.key === 'Home' || e.key === '0') setPitch(0, true);
+    else return;
+    e.preventDefault();
+  });
 
   // ---- interaction ---------------------------------------------------------------------
   function toStage(e) {
@@ -394,7 +452,14 @@
   stage.addEventListener('pointerdown', e => {
     const p = toStage(e);
     initAudio();
-    if (nearArm(p)) {
+    if (inFader(p)) {
+      // grab the knob where it was touched, or jump it to a click on the track
+      e.preventDefault();
+      stage.setPointerCapture(e.pointerId);
+      pitchDrag = { off: Math.abs(p.y - knobY()) < 26 ? knobY() - p.y : 0 };
+      setPitch(yToPitch(p.y + pitchDrag.off), true);
+      stage.className = 'slide';
+    } else if (nearArm(p)) {
       e.preventDefault();
       stage.setPointerCapture(e.pointerId);
       lift();
@@ -413,7 +478,9 @@
   });
   stage.addEventListener('pointermove', e => {
     const p = toStage(e);
-    if (armState === 'drag') {
+    if (pitchDrag) {
+      setPitch(yToPitch(p.y + pitchDrag.off), true);
+    } else if (armState === 'drag') {
       let a = pivotAngle(p) + grabOffset;
       a = theta + wrapDeg(a - theta);
       theta = clampT(a);
@@ -427,10 +494,12 @@
       phi += wrapDeg(a - hand.lastAngle);
       hand.lastAngle = a;
     } else {
-      stage.className = nearArm(p) || onRecord(p) ? 'grab' : inStartStop(p) ? 'press' : '';
+      stage.className = inFader(p) ? 'slide' : nearArm(p) || onRecord(p) ? 'grab' : inStartStop(p) ? 'press' : '';
     }
   });
+  stage.addEventListener('dblclick', e => { if (inFader(toStage(e))) setPitch(0, true); });
   const endPointer = () => {
+    if (pitchDrag) { pitchDrag = null; stage.className = ''; }
     if (armState === 'drag') { stage.className = ''; lower(); }
     if (hand) { hand = null; stage.className = ''; }      // let go: the record keeps its momentum
   };
@@ -473,7 +542,7 @@
       const v = (phi - prevPhi) / dt;
       speed += (v - speed) * (1 - Math.exp(-dt / 0.03));
     } else {
-      const target = motorOn ? RPM_DEG : 0;
+      const target = motorOn ? RPM_DEG * (1 + pitch / 100) : 0;
       const tau = motorOn ? 0.35 : 0.9;                   // spin-up quick, spin-down slow
       speed += (target - speed) * (1 - Math.exp(-dt / tau));
       if (!motorOn && Math.abs(speed) < 0.5) speed = 0;
@@ -493,8 +562,15 @@
       }
     }
     if (crackleGain) crackleGain.gain.setTargetAtTime(armState === 'down' ? 0.16 * Math.min(1, Math.abs(rate)) : 0, actx.currentTime, 0.05);
-    if (armState === 'down' && rate > 0) theta = clampT(theta + 0.012 * dt * rate);   // needle tracks inward
-    arm.style.transform = `rotate(${theta}deg)`;
+    if (armState === 'down' && rate > 0) {
+      // needle tracks inward: convert the radial creep into arm rotation at this angle
+      const rAt = t => { const p = tipAt(t); return Math.hypot(p.x - PLAT.x, p.y - PLAT.y); };
+      const drPerDeg = Math.max(0.5, (rAt(theta) - rAt(theta + 0.1)) / 0.1);
+      theta = clampT(theta + DRIFT_PX_PER_S * rate * dt / drPerDeg);
+    }
+    // sway with the record's rotation while the needle is down; eases in and out on drop/lift
+    swayAmp += ((armState === 'down' ? SWAY_DEG : 0) - swayAmp) * (1 - Math.exp(-dt / 0.4));
+    arm.style.transform = `rotate(${theta + swayAmp * Math.sin(phi * deg)}deg)`;
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
